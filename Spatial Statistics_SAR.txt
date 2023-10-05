@@ -1,0 +1,110 @@
+library(sp)
+library(spData)
+library(Matrix)
+library(sf)
+
+library(spdep);library(maptools);library(raster);library(maptools)
+library(spatialreg);library(leaflet);library(RColorBrewer)
+library(raster);library(ggplot2)
+
+Indonesia<-getData('GADM', country='IDN', level=3) # memanggil shape.file Bandung
+
+Bandung<-Indonesia[Indonesia$NAME_2 == "Kota Bandung",]
+plot(Bandung,col="blue",border="black")
+leaflet(Bandung) %>%
+  addPolygons(stroke=FALSE, fillOpacity=0.8, smoothFactor=0.2) %>%
+  addTiles() #Open Street Map
+
+gizi.buruk<-read.csv(file.choose(),sep=";", header=TRUE)
+head(gizi.buruk)
+
+#Modeling Spatial Dependence
+list.queen<-poly2nb(Bandung, queen=TRUE)
+W<-nb2listw(list.queen, style="W", zero.policy=TRUE)
+W
+warnings()
+
+# Membuat matrix bobot W Standardized
+WmA<-nb2mat(list.queen,style="B",zero.policy=TRUE)
+WA<-as.matrix(WmA)
+WAs<-WA/rowSums(WA) ## Matrix Bobot W Standardized
+
+##SIMULASI DATA
+# Data Simulation
+x<-as.matrix(runif(30,40,90))
+x<-cbind(1,x)
+Beta<-c(30,-0.3)#Koef Regresi -0.3 artinya pengaruh negatif PHBS terhadap Gizi Buruk
+I<-diag(30)
+y<-solve((I-0.9*WAs))%*%(x%*%Beta+as.matrix(rnorm(30,0.2)))/100 #0.9 menunjukan rho yang ingin kita peroleh adalah 0.9
+DataGiziBurukSimulasi<-data.frame(Kecamatan=gizi.buruk$Kecamatan,Gizi.Buruk=y,PHBS=x,id=c(1:30))
+write.csv2(DataGiziBurukSimulasi,"DataGiziBurukSimulasi")
+DataGiziBurukSimulasi
+
+Bandung@data<-DataGiziBurukSimulasi
+require(RColorBrewer) #Mapping Indsutri
+qpal<-colorQuantile("OrRd", Bandung@data$Kasus,n=4)
+
+leaflet(Bandung) %>%
+  addPolygons(stroke=FALSE, fillOpacity=.8, smoothFactor=0.2, color=~qpal(Gizi.Buruk)) %>%
+  addTiles() #Open Street Map
+
+#Model OLS
+GiziBuruk.ols<-lm(Gizi.Buruk~PHBS.2,data=Bandung@data)
+summary(GiziBuruk.ols)
+plot(GiziBuruk.ols)
+
+#pembobot Queen
+list.queen<-poly2nb(Bandung, queen=TRUE)
+W<-nb2listw(list.queen, style="W", zero.policy=TRUE)
+W
+plot(Bandung)
+plot(W,coordinates(Bandung),add=T,col="red")
+
+# Matrix pembobot standardized
+WmA<-nb2mat(list.queen,style="B",zero.policy=TRUE)
+WA<-as.matrix(WmA)
+WAs<-WA/rowSums(WA) ##Matrix bobot standardized
+WAs[c(1:4),c(1:4)]
+
+#Matrix Berbasis Jarak
+coords<-coordinates(Bandung)
+w_dist<-dnearneigh(coords,0,1,longlat=FALSE)
+w_dist
+
+#Testing Spatial Autokorelasi
+##Moran`s I Test
+moran.lm<-lm.morantest(GiziBuruk.ols, W,alternative="two.sided")
+print(moran.lm)
+
+##Lagrange Multiplier Test
+LM<-lm.LMtests(GiziBuruk.ols,W,test="all")
+print(LM)
+summary(LM)
+
+#Spatial Autoregressive (SAR)
+sar.GiziBuruk<-lagsarlm(Gizi.Buruk~PHBS.2,data=Bandung@data,listw=W)
+summary(sar.GiziBuruk)
+
+#Alternatif lain
+sar2sls.Bandung<-stsls(Gizi.Buruk~PHBS.2,data=Bandung@data,listw=w)
+summary(sar2sls.Bandung)
+
+#menyimpan residual
+Bandung@data$gizi.buruk.ols.res<-resid(GiziBuruk.ols) #residuals ols
+Bandung@data$gizi.buruk.sar.res<-resid(sar.GiziBuruk) #residual sar
+
+##OLS
+spplot(Bandung,"gizi.buruk.ols.res",at=seq(min(Bandung@data$gizi.buruk.ols.res,na.rm=TRUE),max(
+Bandung@data$gizi.buruk.ols.res,na.rm =
+TRUE),length=12),col.regions=rev(brewer.pal(11,"RdBu")))
+
+##SAR
+spplot(Bandung,"gizi.buruk.sar.res",at=seq(min(Bandung@data$gizi.buruk.sar.res,na.rm=TRUE),max(
+Bandung@data$gizi.buruk.sar.res,na.rm =
+TRUE),length=12),col.regions=rev(brewer.pal(11,"RdBu")))
+
+impacts(sar.GiziBuruk, listw = W)
+
+#Spatial Error Models (SEM)
+errorsalm.GiziBuruk<-errorsarlm(Gizi.Buruk~PHBS.2,data=Bandung@data,listw=W)
+summary(errorsalm.GiziBuruk)
